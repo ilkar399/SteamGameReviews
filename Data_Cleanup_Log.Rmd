@@ -1,0 +1,147 @@
+---
+title: "Steam Review Data Cleanup Log"
+author: "Mike Kazantsev"
+version: 1.0
+date: '2022-05-10'
+output: html_document
+---
+
+## Cleaning up and checking datasets
+
+Review datasets were created using Steam API. First I'll check if all reviews
+up to date were actually downloaded and if there are any reviews with completely
+empty data (since Steam allows the free format of Review text it's quite 
+possible there are reviews not containing any coherent text, but we'll check
+it later.
+
+## TODO:
+
+* streamlining cleaning to allow multiple appids in one run
+* full automation
+
+## Loading necessary packages
+
+-   tidyverse
+-   lubridate
+
+```{r loading libraries}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(pwr)
+library(readr)
+```
+
+## Setting variables
+```{r setting variables}
+
+appid <- 1889981
+
+```
+
+## Loading dataset
+
+```{r loading datasets}
+#overall game data
+game_summary <- read_csv("data/steamapps.csv")
+#reviews summary and reviews
+dataset_summary <- read_csv(paste("data/summary_",appid,".csv", sep = ""))
+dataset_reviews <- read_csv(paste("data/review_",appid,".csv", sep = ""),
+                        col_types=cols(author.steamid = col_character()),
+                        )
+```
+
+## Cleaning up and checking datasets
+
+### Game dataset
+
+```{r}
+str(game_summary)
+```
+
+This dataset doesn't need much work - changing release_date to the proper date
+format and transforming developers/publishers/categories/genres into the list
+of strings
+
+```{r cleaning up game summary dataset}
+game_summary_cleaned <- game_summary %>% 
+  mutate(release_date = as.Date(release_date, format = "%d %b, %Y"),
+         developers = strsplit(developers,split='\\|'),
+         publishers = strsplit(publishers,split='\\|'),
+         categories = strsplit(categories,split='\\|'),
+         genres = strsplit(genres,split='\\|')
+         )
+```
+
+### CK3 Base game dataaset
+
+```{r}
+str(dataset_reviews)
+```
+
+Checking if there are reviews that were not downloaded successfully and the
+positive/negative difference by comparing with summary dataset:
+
+```{r}
+cat("Total reviews: ",dataset_summary$total_reviews,"\n")
+cat("Not downloaded reviews: ",
+    dataset_summary$total_reviews - nrow(dataset_reviews) %>% abs,"\n")
+dataset_missing_positives <- dataset_reviews %>% 
+      filter(voted_up == TRUE) %>% 
+      nrow - dataset_summary$total_positive
+cat("Missing positive reviews: ", dataset_missing_positives %>% abs, "\n")
+dataset_missing_negatives <- dataset_reviews %>% 
+      filter(voted_up == FALSE) %>% 
+      nrow - dataset_summary$total_negative 
+cat("Missing negative reviews: ", dataset_missing_negatives %>% abs, "\n")
+```
+
+Checking for the duplicates by review_id and author.steamid:
+
+```{r}
+cat("Downloaded reviews: ", nrow(dataset_reviews), "\n")
+cat("Unique review authors:", length(unique(dataset_reviews[["author.steamid"]])), "\n")
+cat("Unique reviews (by ID):", length(unique(dataset_reviews[["review_id"]])), "\n")
+cat("Unique review texts:", length(unique(dataset_reviews[["review_text"]])), "\n")
+```
+
+Checking null values:
+
+```{r}
+dataset_reviews %>% summarise(across(everything(), ~ sum(is.na(.))))
+```
+
+Checking how many reviewers didn't have playtime:
+
+```{r}
+cat("Players that don't have playtime:", dataset_reviews %>% 
+      filter(author.playtime_forever < 1) %>% nrow, "\n")
+```
+
+Removing reviews from the same authors, leaving the newest version (Since the
+review texts are in free form, removing duplicates/empty texts at this stage is
+not useful as we can use these reviews for analysis anyways). We also change
+timestamp to the datetime:
+
+```{r}
+dataset_reviews_cleared <- dataset_reviews %>% 
+  group_by(author.steamid) %>% 
+  slice(which.max(timestamp_created)) %>% 
+  mutate(timestamp_created = as.POSIXct(timestamp_created,
+                                        tz="GMT",
+                                        origin="1970-01-01"),
+         timestamp_updated = as.POSIXct(timestamp_updated,
+                                        tz="GMT",
+                                        origin="1970-01-01"))
+
+cat("Unique review authors",
+    length(unique(dataset_reviews_cleared[["author.steamid"]])), "\n")
+```
+
+Saving the resulting dataset:
+``` {r}
+#For Windows, R 4.2.0+ is advised, otherwise UTF encoding might break
+dataset_reviews_cleared %>%
+   write.csv(paste0(c("data-clean/",appid,".csv"), collapse=""),
+             fileEncoding = "UTF-8")
+```
